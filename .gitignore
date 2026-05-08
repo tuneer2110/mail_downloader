@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Local OS/editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Google OAuth credentials and generated user tokens
+credentials.json
+Credentials.json
+client_secret*.json
+token*.json
+
+# Local environment files
+.env
+.env.*
+
+# App-generated exports/downloads
+gmail_export_*/
+gmail_export_*.zip
+downloads/
+exports/
+
+#Irrelevant folder
+deprecated/
