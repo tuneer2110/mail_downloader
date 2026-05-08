@@ -1,4 +1,4 @@
-SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 CREDENTIALS_FILE = 'credentials.json'
 
 FILE_TYPE_EXTENSIONS = {
