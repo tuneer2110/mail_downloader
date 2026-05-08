@@ -121,7 +121,6 @@ def _authenticate_cloud(email_id: str):
     auth_url, _ = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true',
-        redirect_uri='https://maildownloader-tc2110.streamlit.app/',
     )
 
     st.markdown("**Step 1 — Authorise access**")
