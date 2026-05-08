@@ -117,9 +117,11 @@ def _authenticate_cloud(email_id: str):
 
     # Generate auth URL and show it
     flow     = _get_cloud_flow()
+    flow.redirect_uri = 'https://maildownloader-tc2110.streamlit.app/'
     auth_url, _ = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true',
+        redirect_uri='https://maildownloader-tc2110.streamlit.app/',
     )
 
     st.markdown("**Step 1 — Authorise access**")
@@ -145,7 +147,7 @@ def _authenticate_cloud(email_id: str):
             st.warning("Please paste the authorisation code first.")
             return None
         try:
-            flow.fetch_token(code=auth_code.strip())
+            flow.fetch_token(code=auth_code.strip(), redirect_uri='https://maildownloader-tc2110.streamlit.app/')
             creds = flow.credentials
             st.session_state[session_key] = creds.to_json()
             st.rerun()
