@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import streamlit as st
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -66,9 +67,15 @@ def _authenticate_local(email_id: str):
 
 # ── Cloud auth ────────────────────────────────────────────────────────────────
 
-def _get_flow():
+def _get_flow(code_verifier: str | None = None):
     creds_dict = json.loads(st.secrets["google_credentials"]["json"])
-    flow = Flow.from_client_config(creds_dict, scopes=SCOPES, redirect_uri=REDIRECT_URI)
+    flow = Flow.from_client_config(
+        creds_dict,
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI,
+        code_verifier=code_verifier,
+        autogenerate_code_verifier=(code_verifier is None),
+    )
     return flow
 
 
@@ -83,14 +90,34 @@ def _get_flow():
 # external Google redirect. These helpers put the email inside Google's returned
 # state parameter, signed with the OAuth client secret so it cannot be tampered
 # with by the browser.
+#
+# PKCE verifier fix:
+# Google also expects the token exchange to include the same code_verifier that
+# was used to create the login URL. Streamlit Cloud loses the original Flow
+# object during the redirect, so the old code reached Google with a code but no
+# verifier. The nonce below is fresh for each login; the verifier is derived
+# from that nonce plus the app secret, so it is deterministic for one login but
+# not a single hard-coded value shared by all users.
 def _cloud_client_secret() -> str:
     creds_dict = json.loads(st.secrets["google_credentials"]["json"])
     client_config = creds_dict.get("web") or creds_dict.get("installed") or {}
     return client_config["client_secret"]
 
 
-def _encode_state(email_id: str) -> str:
-    payload = json.dumps({"email": email_id}, separators=(",", ":")).encode("utf-8")
+def _derive_code_verifier(email_id: str, nonce: str) -> str:
+    digest = hmac.new(
+        _cloud_client_secret().encode("utf-8"),
+        f"{email_id}\0{nonce}".encode("utf-8"),
+        hashlib.sha512,
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _encode_state(email_id: str, nonce: str) -> str:
+    payload = json.dumps(
+        {"email": email_id, "nonce": nonce},
+        separators=(",", ":"),
+    ).encode("utf-8")
     body = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
     signature = hmac.new(
         _cloud_client_secret().encode("utf-8"),
@@ -100,7 +127,7 @@ def _encode_state(email_id: str) -> str:
     return f"{body}.{signature}"
 
 
-def _decode_state(state: str) -> str:
+def _decode_state(state: str) -> tuple[str, str]:
     try:
         body, signature = state.split(".", 1)
     except ValueError as exc:
@@ -116,10 +143,14 @@ def _decode_state(state: str) -> str:
 
     padded = body + ("=" * (-len(body) % 4))
     payload = base64.urlsafe_b64decode(padded.encode("ascii"))
-    email_id = json.loads(payload.decode("utf-8")).get("email")
+    state_data = json.loads(payload.decode("utf-8"))
+    email_id = state_data.get("email")
+    nonce = state_data.get("nonce")
     if not email_id:
         raise ValueError("OAuth state did not include an email address.")
-    return email_id
+    if not nonce:
+        raise ValueError("OAuth state did not include a verifier nonce.")
+    return email_id, nonce
 
 
 def _authenticate_cloud(email_id: str | None):
@@ -142,9 +173,11 @@ def _authenticate_cloud(email_id: str | None):
     #
     # That created a loop on Streamlit Cloud when oauth_state was lost after
     # Google redirected back. Now the signed state itself carries the email.
+    code_verifier = None
     if code:
         try:
-            email_id = _decode_state(state or "")
+            email_id, nonce = _decode_state(state or "")
+            code_verifier = _derive_code_verifier(email_id, nonce)
         except Exception as e:
             st.error(f"Authentication failed: {e}")
             st.query_params.clear()
@@ -176,7 +209,7 @@ def _authenticate_cloud(email_id: str | None):
     if code:
         # Exchange code for token
         try:
-            flow = _get_flow()
+            flow = _get_flow(code_verifier=code_verifier)
             flow.fetch_token(code=code)
             creds = flow.credentials
             st.session_state[token_key] = creds.to_json()
@@ -191,8 +224,6 @@ def _authenticate_cloud(email_id: str | None):
             return None
 
     # ── No token, no code — send user to Google ───────────────────────────
-    flow = _get_flow()
-
     # Earlier version:
     #
     #     auth_url, state = flow.authorization_url(access_type='offline', prompt='consent')
@@ -201,10 +232,13 @@ def _authenticate_cloud(email_id: str | None):
     #
     # New version: send a signed state value through Google, so the return trip
     # has everything needed to finish auth without pre-redirect session_state.
+    nonce = secrets.token_urlsafe(32)
+    code_verifier = _derive_code_verifier(email_id, nonce)
+    flow = _get_flow(code_verifier=code_verifier)
     auth_url, _ = flow.authorization_url(
         access_type='offline',
         prompt='consent',
-        state=_encode_state(email_id),
+        state=_encode_state(email_id, nonce),
     )
 
     st.markdown("**Authorise Gmail access**")
