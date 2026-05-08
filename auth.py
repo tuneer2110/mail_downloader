@@ -1,27 +1,10 @@
 """
-auth.py
-───────
-Unified authentication for both local and Streamlit Cloud environments.
+auth.py — unified local + Streamlit Cloud Gmail authentication.
 
-Local:
-  - Reads credentials from credentials.json on disk
-  - Opens a browser window for OAuth approval
-  - Saves token to token_<username>.json for reuse
-
-Streamlit Cloud:
-  - Reads credentials from st.secrets["google_credentials"]["json"]
-  - Cannot open a browser, so uses the manual code flow:
-      1. Shows the user a Google auth URL to visit
-      2. User approves and copies the auth code shown by Google
-      3. User pastes the code into a text input in the app
-      4. Token is stored in st.session_state (lasts for the session)
-  - st.session_state means re-auth is needed each new browser session
-    on the cloud, which is acceptable for a personal tool
-
-Environment detection:
-  - If st.secrets has a "google_credentials" key → cloud mode
-  - Otherwise → local mode
-  No env vars to set, no config to change.
+Local:  reads credentials.json, opens browser, saves token_*.json to disk.
+Cloud:  reads credentials from st.secrets, uses redirect flow where Google
+        redirects back to the Streamlit app URL with a code in the query string.
+        Token stored in st.session_state for the duration of the browser session.
 """
 
 import os
@@ -29,16 +12,17 @@ import json
 import streamlit as st
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from googleapiclient.discovery import build
 
 from config import SCOPES, CREDENTIALS_FILE
+
+REDIRECT_URI = 'https://maildownloader-tc2110.streamlit.app/'
 
 
 # ── Environment detection ─────────────────────────────────────────────────────
 
 def _is_cloud() -> bool:
-    """True when running on Streamlit Cloud (secrets key present)."""
     try:
         return "google_credentials" in st.secrets
     except Exception:
@@ -48,7 +32,6 @@ def _is_cloud() -> bool:
 # ── Local auth ────────────────────────────────────────────────────────────────
 
 def _authenticate_local(email_id: str):
-    """Standard local flow — browser popup, token saved to disk."""
     creds      = None
     token_file = f"token_{email_id.split('@')[0]}.json"
 
@@ -57,7 +40,6 @@ def _authenticate_local(email_id: str):
 
     if not creds or not creds.valid:
         needs_new_login = True
-
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
@@ -78,95 +60,82 @@ def _authenticate_local(email_id: str):
 
 # ── Cloud auth ────────────────────────────────────────────────────────────────
 
-def _get_cloud_flow():
-    """Build an InstalledAppFlow from credentials stored in st.secrets."""
-    creds_json = st.secrets["google_credentials"]["json"]
-    creds_dict = json.loads(creds_json)
-    return InstalledAppFlow.from_client_config(creds_dict, SCOPES)
+def _get_flow():
+    creds_dict = json.loads(st.secrets["google_credentials"]["json"])
+    flow = Flow.from_client_config(creds_dict, scopes=SCOPES, redirect_uri=REDIRECT_URI)
+    return flow
 
 
 def _authenticate_cloud(email_id: str):
     """
-    Manual code flow for Streamlit Cloud.
+    Redirect-based OAuth flow for Streamlit Cloud.
 
-    Two-pass approach using session_state:
-      Pass 1 — generate the auth URL and show it to the user with a
-               text input for the code. Return None to signal "not done yet".
-      Pass 2 — user has pasted a code; exchange it for a token and return
-               the service object.
-
-    app.py checks for None and shows a waiting message instead of
-    proceeding to the search UI.
+    How it works:
+      1. User clicks Connect — we generate a Google auth URL and redirect them there.
+      2. Google redirects back to the Streamlit app URL with ?code=xxx in the query string.
+      3. On that return load we detect the code, exchange it for a token, save to
+         session_state, and proceed. No manual copy-paste needed.
     """
-    session_key = f'cloud_token_{email_id.split("@")[0]}'
+    token_key = f'cloud_token_{email_id.split("@")[0]}'
 
-    # Already have a valid token in this session
-    if session_key in st.session_state:
-        creds = Credentials.from_authorized_user_info(
-            json.loads(st.session_state[session_key]), SCOPES
-        )
-        if creds.valid:
-            return build('gmail', 'v1', credentials=creds)
-        if creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-                st.session_state[session_key] = creds.to_json()
-                return build('gmail', 'v1', credentials=creds)
-            except Exception:
-                del st.session_state[session_key]
-
-    # Generate auth URL and show it
-    flow     = _get_cloud_flow()
-    flow.redirect_uri = 'https://maildownloader-tc2110.streamlit.app/'
-    auth_url, _ = flow.authorization_url(
-        access_type='offline',
-        include_granted_scopes='true',
-    )
-
-    st.markdown("**Step 1 — Authorise access**")
-    st.markdown(
-        f"[Click here to authorise Gmail access]({auth_url})",
-        unsafe_allow_html=False,
-    )
-    st.caption(
-        "You'll see a warning that the app isn't verified — click "
-        "**Advanced → Go to [app name]** to continue. "
-        "Google will then show you a code."
-    )
-
-    st.markdown("**Step 2 — Paste the code below**")
-    auth_code = st.text_input(
-        "Authorisation code from Google",
-        key='cloud_auth_code',
-        placeholder="Paste the code Google showed you",
-    )
-
-    if st.button("Submit code", key='submit_auth_code'):
-        if not auth_code.strip():
-            st.warning("Please paste the authorisation code first.")
-            return None
+    # ── Already have a token — validate and return service ────────────────
+    if token_key in st.session_state:
         try:
-            flow.fetch_token(code=auth_code.strip(), redirect_uri='https://maildownloader-tc2110.streamlit.app/')
+            creds = Credentials.from_authorized_user_info(
+                json.loads(st.session_state[token_key]), SCOPES
+            )
+            if creds.valid:
+                return build('gmail', 'v1', credentials=creds)
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                st.session_state[token_key] = creds.to_json()
+                return build('gmail', 'v1', credentials=creds)
+        except Exception:
+            pass
+        # Token invalid — clear it and re-auth
+        del st.session_state[token_key]
+
+    # ── Check if Google just redirected back with a code ──────────────────
+    params = st.query_params
+    code  = params.get('code')
+    state = params.get('state')
+
+    if code and st.session_state.get('oauth_state') == state:
+        # Exchange code for token
+        try:
+            flow = _get_flow()
+            flow.fetch_token(code=code)
             creds = flow.credentials
-            st.session_state[session_key] = creds.to_json()
-            st.rerun()
+            st.session_state[token_key] = creds.to_json()
+            # Save email so app.py can restore it after rerun
+            st.session_state['authed_email'] = email_id
+            # Clear the code from the URL
+            st.query_params.clear()
+            return build('gmail', 'v1', credentials=creds)
         except Exception as e:
-            st.error(f"Code exchange failed: {e}")
+            st.error(f"Failed to exchange auth code: {e}")
+            st.query_params.clear()
             return None
 
-    return None   # Waiting for user to complete the flow
+    # ── No token, no code — send user to Google ───────────────────────────
+    flow = _get_flow()
+    auth_url, state = flow.authorization_url(access_type='offline', prompt='consent')
+    st.session_state['oauth_state']      = state
+    st.session_state['_pending_email']   = email_id
+
+    st.markdown("**Authorise Gmail access**")
+    st.markdown(f"[Click here to connect your Gmail account]({auth_url})")
+    st.caption(
+        "You'll be taken to Google to approve read-only access. "
+        "After approving you'll be redirected back here automatically."
+    )
+    return None
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def authenticate_gmail(email_id: str):
-    """
-    Authenticate with Gmail. Returns a service object or None.
-
-    Returns None only in the cloud flow while waiting for the user to
-    paste their auth code — app.py should check for None and st.stop().
-    In the local flow it either succeeds or raises.
-    """
+    """Returns a Gmail service object, or None if cloud auth is mid-flow."""
     if _is_cloud():
         return _authenticate_cloud(email_id)
     return _authenticate_local(email_id)

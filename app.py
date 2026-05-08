@@ -26,25 +26,37 @@ def main():
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 1 — AUTHENTICATION
     # ═══════════════════════════════════════════════════════════════════════
+    # ── Handle Google redirect return (cloud only) ───────────────────────
+    # When Google redirects back with ?code=xxx, email is in session_state
+    # from before the redirect. Attempt auth immediately without showing the form.
+    if 'service' not in st.session_state and st.query_params.get('code'):
+        pending_email = st.session_state.get('_pending_email', '')
+        if pending_email:
+            try:
+                svc = authenticate_gmail(pending_email)
+                if svc is not None:
+                    st.session_state.service      = svc
+                    st.session_state.authed_email = pending_email
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Authentication failed: {e}")
+
     if 'service' not in st.session_state:
         st.header("Step 1 — Authenticate")
         email_id = st.text_input("Gmail address", placeholder="you@gmail.com", key='email_id')
 
-        if st.button("Connect to Gmail") or st.session_state.get('_cloud_auth_pending'):
+        if st.button("Connect to Gmail"):
             if not email_id:
                 st.warning("Please enter your email address first.")
             else:
                 try:
                     svc = authenticate_gmail(email_id)
                     if svc is None:
-                        # Cloud flow — waiting for user to paste auth code
-                        st.session_state['_cloud_auth_pending'] = True
-                        st.session_state['_cloud_auth_email']   = email_id
+                        # Cloud flow — redirecting to Google, stop rendering
                         st.stop()
                     else:
-                        st.session_state.service               = svc
-                        st.session_state.authed_email          = email_id
-                        st.session_state['_cloud_auth_pending'] = False
+                        st.session_state.service      = svc
+                        st.session_state.authed_email = email_id
                         st.rerun()
                 except Exception as e:
                     st.error(f"Authentication failed: {e}")
