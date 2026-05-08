@@ -37,7 +37,7 @@ def main():
     # email from the signed OAuth state parameter in the return URL.
     if 'service' not in st.session_state and st.query_params.get('code'):
         try:
-            svc = authenticate_gmail()
+            svc = authenticate_gmail(None)
             if svc is not None:
                 st.session_state.service = svc
                 st.rerun()
