@@ -26,7 +26,9 @@ def inject_styles():
         transition: background-color 0.15s ease;
     }
     div.stButton > button:hover { background-color: #2f5560; color: #ffffff; }
-    div.stButton > button:disabled { background-color: #b0c4c8 !important; color: #ffffff !important; }
+    div.stButton > button:disabled {
+        background-color: #b0c4c8 !important; color: #ffffff !important;
+    }
     div.stDownloadButton > button {
         background-color: #3d6b74; color: #ffffff; border: none;
         border-radius: 6px; padding: 0.4rem 1.4rem; font-weight: 500;
@@ -55,13 +57,6 @@ def clear_progress_bar(bar_ph, text_ph):
 
 # ── Session-state helpers ─────────────────────────────────────────────────────
 
-def _sel() -> dict:
-    """selected_ids as a plain dict {id: True} — reliable across reruns."""
-    if 'selected_ids' not in st.session_state:
-        st.session_state.selected_ids = {}
-    return st.session_state.selected_ids
-
-
 def _clear_chk_keys():
     for k in list(st.session_state.keys()):
         if k.startswith('chk_'):
@@ -70,8 +65,8 @@ def _clear_chk_keys():
 
 def reset_results_state():
     st.session_state.messages      = []
-    st.session_state.emails_data   = {}     # dict: index → metadata
-    st.session_state.messages_list = []     # ordered list of {id, threadId}
+    st.session_state.emails_data   = {}
+    st.session_state.messages_list = []
     st.session_state.selected_ids  = {}
     st.session_state.page          = 0
     st.session_state.page_size     = DEFAULT_PAGE_SIZE
@@ -84,16 +79,16 @@ def reset_results_state():
 
 def render_results_table(emails_data: dict, total_found: int):
     """
-    emails_data: dict of {index: metadata_dict} — may be partial during streaming.
-    total_found: total message count from search (may exceed loaded so far).
+    emails_data: dict {index: metadata_dict} — may be partial during streaming.
+    total_found: total IDs from search (denominator for progress display).
     """
     loaded = [emails_data[i] for i in sorted(emails_data.keys())]
     if not loaded:
         st.caption("Loading…")
         return
 
-    sel   = _sel()
     total = len(loaded)
+    sel   = st.session_state.get('selected_ids', {})
 
     # ── Pagination ────────────────────────────────────────────────────────
     page_size   = st.session_state.get('page_size', DEFAULT_PAGE_SIZE)
@@ -104,37 +99,14 @@ def render_results_table(emails_data: dict, total_found: int):
     end        = min(start + page_size, total)
     page_slice = loaded[start:end]
 
-    # ── Toolbar ───────────────────────────────────────────────────────────
-    t1, t2, t3, t4 = st.columns([3, 2, 2, 2])
-    with t1:
-        n_sel = len(sel)
-        info  = f"**{total}** loaded"
-        if total_found > total:
-            info += f" of **{total_found}** found"
-        if n_sel:
-            info += f" · **{n_sel}** selected"
-        st.caption(info)
-
-    with t2:
-        if st.button("✔ Select this page", use_container_width=True, key='sel_page'):
-            new_sel = dict(sel)
-            for row in page_slice:
-                new_sel[row['id']] = True
-            st.session_state.selected_ids = new_sel
-            _clear_chk_keys()
-            st.rerun()
-
-    with t3:
-        if st.button("✔ Select all loaded", use_container_width=True, key='sel_all'):
-            st.session_state.selected_ids = {row['id']: True for row in loaded}
-            _clear_chk_keys()
-            st.rerun()
-
-    with t4:
-        if st.button("✕ Clear selection", use_container_width=True, key='sel_clear'):
-            st.session_state.selected_ids = {}
-            _clear_chk_keys()
-            st.rerun()
+    # ── Toolbar: count info only ──────────────────────────────────────────
+    n_sel = len(sel)
+    info  = f"**{total}** loaded"
+    if total_found > total:
+        info += f" of **{total_found}** found"
+    if n_sel:
+        info += f" · **{n_sel}** selected"
+    st.caption(info)
 
     # ── Page size ─────────────────────────────────────────────────────────
     ps_col, _ = st.columns([2, 5])
@@ -157,19 +129,15 @@ def render_results_table(emails_data: dict, total_found: int):
     st.divider()
 
     # ── Rows ──────────────────────────────────────────────────────────────
-    # Re-read sel fresh each row — important after bulk ops
-    sel = st.session_state.selected_ids
     for row in page_slice:
         cols     = st.columns(col_widths)
         email_id = row['id']
         with cols[0]:
-            was_checked = bool(sel.get(email_id))
+            was_checked = bool(st.session_state.get('selected_ids', {}).get(email_id))
             ticked = st.checkbox('', value=was_checked, key=f'chk_{email_id}',
                                  label_visibility='collapsed')
             if ticked != was_checked:
-                # User toggled — update and reassign the whole dict so Streamlit
-                # registers the change
-                new_sel = dict(st.session_state.selected_ids)
+                new_sel = dict(st.session_state.get('selected_ids', {}))
                 if ticked:
                     new_sel[email_id] = True
                 else:
@@ -182,7 +150,7 @@ def render_results_table(emails_data: dict, total_found: int):
 
     st.divider()
 
-    # ── Pagination controls ───────────────────────────────────────────────
+    # ── Pagination ────────────────────────────────────────────────────────
     pl, pm, pr = st.columns([1, 3, 1])
     with pl:
         if st.button("← Prev", disabled=(page == 0), use_container_width=True):

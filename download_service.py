@@ -82,8 +82,8 @@ def _month_folder(dt: datetime | None) -> str:
 
 
 def _date_prefix(dt: datetime | None) -> str:
-    """e.g. '20250412'"""
-    return dt.strftime('%Y%m%d') if dt else 'unknown'
+    """e.g. '2025-04-12'"""
+    return dt.strftime('%Y-%m-%d') if dt else 'unknown'
 
 
 def _build_thread_service(service):
@@ -376,7 +376,7 @@ def build_export_zip_streaming(
         return stop_flag() if stop_flag else False
 
     svc         = _build_thread_service(service)
-    export_date = datetime.now().strftime('%Y%m%d')
+    export_date = datetime.now().strftime('%y-%m-%d')
     root        = f"gmail_export_{export_date}"
 
     buf        = io.BytesIO()
@@ -479,7 +479,7 @@ def build_export_zip_streaming(
                 body_paths if include_bodies      else None,
                 att_paths  if include_attachments else None,
             )
-            zf.writestr(f"{root}/metadata.xlsx", excel_bytes)
+            zf.writestr(f"{root}/metadata_{export_date}.xlsx", excel_bytes)
             _progress(1, 1, "Done")
 
     return buf.getvalue()

@@ -1,4 +1,21 @@
-streamlit
-google-api-python-client
-google-auth
-google-auth-oauthlib
+# Google API
+google-api-python-client>=2.100.0
+google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.1.1
+
+# Streamlit UI
+streamlit>=1.35.0
+
+# Excel export
+openpyxl>=3.1.2
+
+# PDF export (email bodies)
+reportlab>=4.0.0
+
+# HTML email parsing (graceful fallback if absent)
+beautifulsoup4>=4.12.0
+
+# Note: python-docx is imported in download_service.py but the Word export
+# path was removed from the UI. It can be omitted unless you re-enable it.
+# python-docx>=1.1.0

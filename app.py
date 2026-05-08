@@ -9,17 +9,15 @@ from datetime import datetime
 
 from config import FILE_TYPE_EXTENSIONS
 from auth import authenticate_gmail
-from query_builder import build_email_query
+from query_builder import build_email_query, MAILBOX_LABELS, EXCLUDABLE_LABELS
 from email_service import search_emails, stream_emails_metadata
 from download_service import build_export_zip_streaming
-from ui_components import (
-    inject_styles, reset_results_state, render_results_table,
-)
+from ui_components import inject_styles, reset_results_state, render_results_table
 
 st.set_page_config(page_title="Gmail Content Downloader", page_icon="✉️", layout="wide")
 inject_styles()
 
-PREVIEW_OPTIONS = ["10", "25", "50", "100", "All"]
+LOAD_OPTIONS = ["10", "25", "50", "100", "All"]
 
 
 def main():
@@ -54,11 +52,24 @@ def main():
     st.divider()
     st.header("Step 2 — Search")
 
+    keyword = st.text_input("Keyword", placeholder="Subject, body or attachment name")
+
+    # ── Dates — optional, empty by default ───────────────────────────────
     col_start, col_end = st.columns(2)
     with col_start:
-        start_date = st.date_input("Start date", max_value=datetime.today())
+        use_start = st.checkbox("Start date", key='use_start')
+        start_date = st.date_input(
+            "Start date value", max_value=datetime.today(),
+            key='start_date_val', label_visibility='collapsed',
+        ) if use_start else None
     with col_end:
-        end_date = st.date_input("End date", min_value=start_date, max_value=datetime.today())
+        use_end = st.checkbox("End date", key='use_end')
+        end_date = st.date_input(
+            "End date value",
+            min_value=start_date if start_date else datetime(2000, 1, 1),
+            max_value=datetime.today(),
+            key='end_date_val', label_visibility='collapsed',
+        ) if use_end else None
 
     col_from, col_to = st.columns(2)
     with col_from:
@@ -66,38 +77,62 @@ def main():
     with col_to:
         recipient = st.text_input("To",   placeholder="name or email@example.com")
 
-    keyword = st.text_input("Keyword", placeholder="Subject or body text")
+    mailbox = st.selectbox(
+        "Search in",
+        list(MAILBOX_LABELS.keys()),
+        index=0,
+        key='mailbox',
+    )
 
     has_attachments  = st.checkbox("Has attachments")
     attachment_types = []
     if has_attachments:
-        attachment_types = st.multiselect("Attachment types", list(FILE_TYPE_EXTENSIONS.keys()))
+        attachment_types = st.multiselect(
+            "Attachment types", list(FILE_TYPE_EXTENSIONS.keys())
+        )
 
-    col_s1, col_s2 = st.columns(2)
-    with col_s1: skip_replies  = st.checkbox("Skip replies")
-    with col_s2: skip_forwards = st.checkbox("Skip forwards")
+    # ── Advanced ──────────────────────────────────────────────────────────
+    with st.expander("Advanced search"):
+        exclude_keywords = st.text_input(
+            "Exclude keywords",
+            placeholder="words or phrases to exclude (space-separated)",
+        )
+        exclude_labels = st.multiselect(
+            "Exclude results from",
+            EXCLUDABLE_LABELS,
+            help="Remove emails that belong to any of these categories",
+        )
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            skip_replies  = st.checkbox("Skip replies")
+        with col_a2:
+            skip_forwards = st.checkbox("Skip forwards")
 
+    # ── Search button ─────────────────────────────────────────────────────
     _, btn_col, _ = st.columns([1, 2, 1])
     with btn_col:
         search_clicked = st.button("🔍  Search", use_container_width=True)
 
     if search_clicked:
         query = build_email_query(
-            sender=sender, recipient=recipient, keyword=keyword,
+            sender=sender, recipient=recipient,
+            keyword=keyword, exclude_keywords=exclude_keywords,
             start_date=start_date, end_date=end_date,
+            mailbox=mailbox,
             has_attachment=has_attachments, file_types=attachment_types,
             skip_replies=skip_replies, skip_forwards=skip_forwards,
+            exclude_labels=exclude_labels,
         )
-        with st.expander("Generated query", expanded=False):
-            st.code(query, language=None)
+        # Persist query so the expander survives subsequent reruns
+        st.session_state['last_query'] = query
 
         with st.spinner("Searching…"):
-            # Always fetch all matching IDs — this is fast (index-only)
             messages = search_emails(service, query, max_results=None)
 
         if not messages:
             st.info("No messages found.")
             reset_results_state()
+            st.session_state['last_query'] = query   # keep query visible even on no results
             st.stop()
 
         reset_results_state()
@@ -105,8 +140,13 @@ def main():
         st.session_state.total_found   = len(messages)
         st.rerun()
 
+    # Show persisted query expander whenever a search has been run
+    if st.session_state.get('last_query'):
+        with st.expander("Generated query", expanded=False):
+            st.code(st.session_state['last_query'], language=None)
+
     # ═══════════════════════════════════════════════════════════════════════
-    # PREVIEW LIMIT — shown after search returns IDs, before loading metadata
+    # METADATA LOAD LIMIT — shown after search, before loading starts
     # ═══════════════════════════════════════════════════════════════════════
     messages_list = st.session_state.get('messages_list', [])
     if not messages_list:
@@ -114,28 +154,27 @@ def main():
 
     total_found = st.session_state.get('total_found', len(messages_list))
 
-    # Only show the selector when we have results
-    pc1, pc2, _ = st.columns([2, 2, 3])
-    with pc1:
+    st.divider()
+    lc1, lc2 = st.columns([3, 2])
+    with lc1:
         st.caption(f"**{total_found}** match{'es' if total_found != 1 else ''} found")
-    with pc2:
-        preview_choice = st.selectbox(
-            "Load metadata for",
-            PREVIEW_OPTIONS,
-            index=1,          # default 25
-            key='preview_limit',
-            label_visibility='collapsed',
+    with lc2:
+        load_choice = st.selectbox(
+            "Load details for how many results?",
+            LOAD_OPTIONS,
+            index=1,    # default 25
+            key='load_limit',
         )
-    preview_n = None if preview_choice == "All" else int(preview_choice)
-    load_list = messages_list if preview_n is None else messages_list[:preview_n]
 
-    # If preview limit changed, reset emails_data so we reload
-    prev_preview = st.session_state.get('_last_preview')
-    if prev_preview != preview_choice:
+    load_n    = None if load_choice == "All" else int(load_choice)
+    load_list = messages_list if load_n is None else messages_list[:load_n]
+
+    # Reset emails_data if load choice changed
+    if st.session_state.get('_last_load') != load_choice:
         st.session_state.emails_data  = {}
         st.session_state.loading_done = False
         st.session_state.stop_loading = False
-        st.session_state._last_preview = preview_choice
+        st.session_state._last_load   = load_choice
 
     # ═══════════════════════════════════════════════════════════════════════
     # PROGRESSIVE METADATA LOADING
@@ -147,42 +186,40 @@ def main():
 
     if not loading_done and not stop_loading:
         remaining = [(i, m) for i, m in enumerate(load_list) if i not in emails_data]
-
         if remaining:
             load_status = st.empty()
             load_bar    = st.empty()
-            stop_col, _ = st.columns([1, 4])
-            with stop_col:
+            sc, _ = st.columns([1, 4])
+            with sc:
                 if st.button("⏹ Stop loading", key='stop_btn'):
                     st.session_state.stop_loading = True
                     st.rerun()
 
             already = len(emails_data)
-            load_status.caption(f"Loading details — {already} of {load_target}")
+            load_status.caption(f"Loading email details — {already} of {load_target}")
             load_bar.progress(already / load_target if load_target else 1.0)
 
-            BATCH = 10
-            batch      = remaining[:BATCH]
-            batch_msgs = [m for _, m in batch]
-            batch_idxs = [i for i, _ in batch]
-            collected  = {}
+            BATCH     = 10
+            batch     = remaining[:BATCH]
+            b_msgs    = [m for _, m in batch]
+            b_idxs    = [i for i, _ in batch]
+            collected = {}
 
             stream_emails_metadata(
-                service, batch_msgs,
+                service, b_msgs,
                 on_result=lambda idx, meta: collected.__setitem__(idx, meta),
                 stop_flag=lambda: st.session_state.get('stop_loading', False),
             )
 
             new_data = dict(emails_data)
-            for local_i, global_i in enumerate(batch_idxs):
-                if local_i in collected:
-                    new_data[global_i] = collected[local_i]
+            for li, gi in enumerate(b_idxs):
+                if li in collected:
+                    new_data[gi] = collected[li]
             st.session_state.emails_data = new_data
 
             if len(new_data) >= load_target:
                 st.session_state.loading_done = True
-                load_status.empty()
-                load_bar.empty()
+                load_status.empty(); load_bar.empty()
             else:
                 time.sleep(0.05)
                 st.rerun()
@@ -190,7 +227,7 @@ def main():
             st.session_state.loading_done = True
 
     # ═══════════════════════════════════════════════════════════════════════
-    # STEP 3 — RESULTS TABLE
+    # STEP 3 — SELECT
     # ═══════════════════════════════════════════════════════════════════════
     emails_data = st.session_state.get('emails_data', {})
     if not emails_data:
@@ -204,7 +241,7 @@ def main():
     if not loading_done and not stop_loading:
         st.caption("⏳ Still loading — table updates as results arrive.")
     elif stop_loading and not loading_done:
-        st.caption(f"⏹ Stopped at {len(emails_data)} of {load_target} — you can still select and export.")
+        st.caption(f"⏹ Stopped — {len(emails_data)} of {load_target} loaded. You can still export.")
 
     render_results_table(emails_data, load_target)
 
@@ -214,11 +251,10 @@ def main():
     st.divider()
     st.header("Step 4 — Download")
 
-    # Read selection fresh from session_state every render
-    selected_ids = dict(st.session_state.get('selected_ids', {}))
-    n_sel        = len(selected_ids)
-    all_loaded   = [emails_data[i] for i in sorted(emails_data.keys())]
-    n_loaded     = len(all_loaded)
+    selected_ids   = dict(st.session_state.get('selected_ids', {}))
+    n_sel          = len(selected_ids)
+    all_loaded     = [emails_data[i] for i in sorted(emails_data.keys())]
+    n_loaded       = len(all_loaded)
     messages_by_id = {m['id']: m for m in messages_list}
 
     def _with_thread(em):
@@ -243,42 +279,73 @@ def main():
     include_bodies      = "Email content (PDF)" in download_options
 
     # ── Scope ─────────────────────────────────────────────────────────────
-    # Store scope in session_state so it survives reruns caused by the
-    # Prepare button — reading it from the radio directly at button-click
-    # time is unreliable because Streamlit processes widgets top-to-bottom
-    # and the radio may not yet have committed its value.
+    scope_opts = []
     if n_sel > 0:
-        scope = st.radio(
-            "Export scope",
-            ["Download selection", "Download all loaded results"],
-            index=0,
-            horizontal=True,
-            key='export_scope',
-        )
+        scope_opts.append(f"Download selection ({n_sel})")
+    scope_opts.append(f"Download loaded results ({n_loaded})")
+    if total_found > n_loaded:
+        scope_opts.append(f"Download all matches ({total_found})")
+
+    scope = st.radio(
+        "Export scope",
+        scope_opts,
+        index=0,
+        horizontal=True,
+        key='export_scope',
+    )
+    st.session_state['_scope_committed'] = scope
+
+    if scope.startswith("Download selection"):
+        scope_key     = "selection"
+        preview_count = n_sel
+    elif scope.startswith("Download all"):
+        scope_key     = "all_matches"
+        preview_count = total_found
     else:
-        scope = "Download all loaded results"
-        st.caption("No emails selected — exporting all loaded results.")
+        scope_key     = "loaded"
+        preview_count = n_loaded
 
-    # Persist scope explicitly so the Prepare handler reads the committed value
-    st.session_state['_export_scope_committed'] = scope
+    st.caption(
+        f"Will export **{preview_count}** email{'s' if preview_count != 1 else ''}  —  "
+        + ", ".join(download_options)
+    )
 
-    if scope == "Download selection":
-        export_emails = [_with_thread(em) for em in all_loaded if em['id'] in selected_ids]
-    else:
-        export_emails = [_with_thread(em) for em in all_loaded]
+    # ── Prepare button ────────────────────────────────────────────────────
+    if st.button("Prepare export", key='prep_export'):
+        committed = st.session_state.get('_scope_committed', scope)
 
-    scope_label = f"{len(export_emails)} email{'s' if len(export_emails) != 1 else ''}"
-    st.caption(f"Will export **{scope_label}** — {', '.join(download_options)}")
-
-    # ── Prepare + progress ────────────────────────────────────────────────
-    can_export = bool(export_emails)
-
-    if st.button("Prepare export", key='prep_export', disabled=not can_export):
-        # Re-read scope from the committed value to avoid timing issues
-        committed_scope = st.session_state.get('_export_scope_committed', scope)
-        if committed_scope == "Download selection":
+        if committed.startswith("Download selection"):
             final_emails = [_with_thread(em) for em in all_loaded
-                           if em['id'] in st.session_state.get('selected_ids', {})]
+                            if em['id'] in st.session_state.get('selected_ids', {})]
+        elif committed.startswith("Download all"):
+            # Load any remaining unloaded metadata first
+            remaining_msgs = [m for m in messages_list
+                              if m['id'] not in {e['id'] for e in all_loaded}]
+            if remaining_msgs:
+                ext_ph  = st.empty()
+                ext_bar = st.empty()
+                extra   = {}
+
+                stream_emails_metadata(
+                    service, remaining_msgs,
+                    on_result=lambda idx, meta: (
+                        extra.__setitem__(idx, meta) or
+                        ext_ph.caption(f"Loading remaining — {len(extra)} of {len(remaining_msgs)}") or
+                        ext_bar.progress(len(extra) / len(remaining_msgs))
+                    ),
+                    stop_flag=lambda: False,
+                )
+                ext_ph.empty(); ext_bar.empty()
+                offset   = len(all_loaded)
+                new_data = dict(st.session_state.get('emails_data', {}))
+                for i, meta in extra.items():
+                    new_data[offset + i] = meta
+                st.session_state.emails_data  = new_data
+                st.session_state.loading_done = True
+                all_loaded_full = [new_data[k] for k in sorted(new_data.keys())]
+            else:
+                all_loaded_full = all_loaded
+            final_emails = [_with_thread(em) for em in all_loaded_full]
         else:
             final_emails = [_with_thread(em) for em in all_loaded]
 
@@ -287,16 +354,10 @@ def main():
         else:
             prog_text = st.empty()
             prog_bar  = st.empty()
-            stop_dl_col, _ = st.columns([1, 4])
-            with stop_dl_col:
-                # Render the stop button placeholder — the button itself is
-                # inside the streaming loop in download_service
-                pass
-
             prog_text.caption("Preparing export…")
             prog_bar.progress(0.0)
 
-            stop_download = [False]
+            excel_emails = final_emails if committed.startswith("Download all") else all_loaded
 
             def _dl_progress(done, total, phase):
                 if total:
@@ -306,16 +367,15 @@ def main():
             try:
                 zip_bytes = build_export_zip_streaming(
                     service             = service,
-                    emails_data         = all_loaded,
+                    emails_data         = excel_emails,
                     selected_emails     = final_emails,
                     include_metadata    = include_metadata,
                     include_attachments = include_attachments,
                     include_bodies      = include_bodies,
                     on_progress         = _dl_progress,
-                    stop_flag           = lambda: stop_download[0],
+                    stop_flag           = lambda: False,
                 )
-                prog_text.empty()
-                prog_bar.empty()
+                prog_text.empty(); prog_bar.empty()
                 st.session_state.export_zip   = zip_bytes
                 st.session_state.export_label = _export_label(download_options)
             except RuntimeError as e:
@@ -326,7 +386,8 @@ def main():
                 st.error(f"Export failed: {e}")
 
     if st.session_state.get('export_zip'):
-        fname = f"gmail_export_{datetime.now().strftime('%Y%m%d')}.zip"
+        today = datetime.now().strftime('%y-%m-%d')
+        fname = f"gmail_export_{today}.zip"
         st.download_button(
             label=f"⬇ Download {st.session_state.get('export_label', 'export')}.zip",
             data=st.session_state.export_zip,
