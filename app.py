@@ -27,19 +27,22 @@ def main():
     # STEP 1 — AUTHENTICATION
     # ═══════════════════════════════════════════════════════════════════════
     # ── Handle Google redirect return (cloud only) ───────────────────────
-    # When Google redirects back with ?code=xxx, email is in session_state
-    # from before the redirect. Attempt auth immediately without showing the form.
+    # Earlier version:
+    #
+    #     pending_email = st.session_state.get('_pending_email', '')
+    #     svc = authenticate_gmail(pending_email)
+    #
+    # That can loop on Streamlit Cloud because _pending_email may disappear
+    # during the external Google redirect. authenticate_gmail() now recovers the
+    # email from the signed OAuth state parameter in the return URL.
     if 'service' not in st.session_state and st.query_params.get('code'):
-        pending_email = st.session_state.get('_pending_email', '')
-        if pending_email:
-            try:
-                svc = authenticate_gmail(pending_email)
-                if svc is not None:
-                    st.session_state.service      = svc
-                    st.session_state.authed_email = pending_email
-                    st.rerun()
-            except Exception as e:
-                st.error(f"Authentication failed: {e}")
+        try:
+            svc = authenticate_gmail()
+            if svc is not None:
+                st.session_state.service = svc
+                st.rerun()
+        except Exception as e:
+            st.error(f"Authentication failed: {e}")
 
     if 'service' not in st.session_state:
         st.header("Step 1 — Authenticate")

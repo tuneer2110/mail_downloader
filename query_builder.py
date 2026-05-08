@@ -58,7 +58,7 @@ def build_email_query(
 
     # ── Dates ─────────────────────────────────────────────────────────────
     if start_date:
-        query_parts.append(f'after:{start_date - timedelta(days=1)}')
+        query_parts.append(f'after:{start_date}')
     if end_date:
         query_parts.append(f'before:{end_date + timedelta(days=1)}')
 

@@ -18,6 +18,7 @@ env/
 .idea/
 
 # Google OAuth credentials and generated user tokens
+streamlit_webapp_cred.json
 credentials.json
 Credentials.json
 client_secret*.json
@@ -35,3 +36,4 @@ exports/
 
 #Irrelevant folder
 deprecated/
+
